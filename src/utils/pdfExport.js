@@ -1,34 +1,66 @@
 import { jsPDF } from 'jspdf'
 
+// --- Mise en page générale -------------------------------------------------
 const MARGIN = 48
-const LINE_HEIGHT = 13
-const OPTION_FONT_SIZE = 10
-const QUESTION_FONT_SIZE = 11
-const LOGO_HEIGHT = 90 // bannière/logo du vendeur, bien agrandi en en-tête
-const CHAR_SPACE = -0.3 // resserre l'espacement entre les caractères
+const BANNER_TOP_OFFSET = 26 // légèrement plus proche du bord supérieur que MARGIN
+const PAGE_NUMBER_MARGIN = 24
 
+// --- Typographie ------------------------------------------------------------
+// "helvetica" est la police intégrée à jsPDF métriquement la plus proche
+// d'Arial (Arial n'est pas embarquable nativement dans jsPDF sans charger
+// une fonte custom) ; aucun espacement de caractères n'est appliqué
+// (comportement par défaut de jsPDF), conformément à la consigne.
+const FONT_FAMILY = 'helvetica'
+const TITLE_LINE_HEIGHT = 15
+const ANSWER_LINE_HEIGHT = 13
+const OPTION_INDENT = 12
+const SCORE_FONT_SIZE = 17 // réduit (auparavant 24)
+
+// --- Couleurs -----------------------------------------------------------
+const COLOR_TITLE = [25, 25, 25] // quasi-noir pour les titres de question
+const COLOR_CORRECT = [21, 128, 61] // vert : bonne(s) réponse(s)
+const COLOR_WRONG = [185, 28, 28] // rouge : réponse erronée choisie par l'utilisateur
+const COLOR_NEUTRAL = [15, 15, 15] // noir : le reste des réponses
+const COLOR_MUTED = [110, 110, 110] // gris : date/référence en en-tête
+const COLOR_RULE = [222, 222, 222] // gris clair : lignes de séparation
+
+// --- Bannière vendeur (en-tête) -------------------------------------------
+// La bannière doit occuper au moins 50% de la largeur de la page : on vise
+// 60% pour un rendu confortablement au-dessus du minimum requis, avec un
+// plafond de hauteur pour éviter qu'un logo carré/haut ne devienne
+// disproportionné.
+const BANNER_WIDTH_RATIO = 0.6
+const BANNER_MIN_WIDTH_RATIO = 0.5
+const BANNER_MAX_HEIGHT = 150
+
+/**
+ * Ajoute une nouvelle page si le contenu à venir ("needed" pt de hauteur)
+ * ne tient pas dans l'espace restant avant le bas de la zone imprimable.
+ */
 function ensureSpace(doc, y, needed) {
   const pageHeight = doc.internal.pageSize.getHeight()
   if (y + needed > pageHeight - MARGIN) {
     doc.addPage()
-    return MARGIN + 8
+    return MARGIN
   }
   return y
 }
 
-function writeWrapped(doc, text, x, y, maxWidth, { bold = false, underline = false } = {}) {
-  doc.setFont('helvetica', bold ? 'bold' : 'normal')
-  const lines = doc.splitTextToSize(text, maxWidth)
+/**
+ * Écrit un texte en le repliant automatiquement pour ne jamais dépasser
+ * "maxWidth", avec saut de page automatique dès qu'une ligne ne tient plus
+ * dans la hauteur restante — aucun contenu ne peut ainsi sortir du cadre
+ * imprimable, ni horizontalement ni verticalement.
+ */
+function writeWrapped(doc, text, x, y, maxWidth, lineHeight, { bold = false, color = COLOR_NEUTRAL } = {}) {
+  doc.setFont(FONT_FAMILY, bold ? 'bold' : 'normal')
+  doc.setTextColor(...color)
 
+  const lines = doc.splitTextToSize(text, maxWidth)
   lines.forEach((line) => {
-    y = ensureSpace(doc, y, LINE_HEIGHT)
+    y = ensureSpace(doc, y, lineHeight)
     doc.text(line, x, y)
-    if (underline) {
-      const width = doc.getTextWidth(line)
-      doc.setLineWidth(0.6)
-      doc.line(x, y + 2.4, x + width, y + 2.4)
-    }
-    y += LINE_HEIGHT
+    y += lineHeight
   })
 
   return y
@@ -38,7 +70,7 @@ function loadImage(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => resolve(img)
-    img.onerror = () => reject(new Error('Impossible de charger le logo.'))
+    img.onerror = () => reject(new Error('Impossible de charger la bannière du vendeur.'))
     img.src = dataUrl
   })
 }
@@ -70,20 +102,150 @@ function buildDocumentReference(fileName) {
 }
 
 /**
+ * Dessine la bannière du vendeur, centrée horizontalement, dimensionnée à
+ * au moins 50% de la largeur de page (60% visé), en conservant son ratio
+ * d'aspect. Retourne le nouveau y sous la bannière.
+ */
+async function drawVendorBanner(doc, vendorLogoDataUrl, pageWidth, y) {
+  if (!vendorLogoDataUrl) return y
+
+  try {
+    const img = await loadImage(vendorLogoDataUrl)
+    const ratio = img.naturalWidth / (img.naturalHeight || 1) || 1
+
+    let width = pageWidth * BANNER_WIDTH_RATIO
+    let height = width / ratio
+
+    if (height > BANNER_MAX_HEIGHT) {
+      height = BANNER_MAX_HEIGHT
+      width = height * ratio
+    }
+
+    // Garde-fou : ne jamais descendre sous le minimum de 50% de la largeur
+    // de page tant que la hauteur obtenue reste raisonnable.
+    const minWidth = pageWidth * BANNER_MIN_WIDTH_RATIO
+    if (width < minWidth && minWidth / ratio <= BANNER_MAX_HEIGHT * 1.5) {
+      width = minWidth
+      height = width / ratio
+    }
+
+    const format = pickImageFormat(vendorLogoDataUrl)
+    const x = (pageWidth - width) / 2
+
+    doc.addImage(vendorLogoDataUrl, format, x, y, width, height)
+    return y + height + 20
+  } catch (err) {
+    console.warn('Bannière vendeur non insérée dans le PDF :', err)
+    return y
+  }
+}
+
+/**
+ * Dessine l'intégralité du contenu du document sur "doc" : bannière,
+ * en-tête (référence + date + nombre total de pages), score, puis le
+ * détail des questions/réponses.
+ *
+ * Le nombre total de pages n'étant connu qu'une fois tout le contenu posé,
+ * cette fonction est appelée deux fois (voir buildResultsPdf) : une
+ * première passe "à blanc" pour compter les pages, puis une seconde passe
+ * définitive où ce total est inséré dans le sous-titre d'en-tête.
+ */
+async function renderContent(doc, { vendorLogoDataUrl, score, results, refLabel, dateStr, totalPagesLabel }) {
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const maxWidth = pageWidth - MARGIN * 2
+  let y = BANNER_TOP_OFFSET
+
+  // --- En-tête : bannière vendeur centrée, puis sous-titre (référence,
+  // date, nombre total de pages) ---------------------------------------
+  y = await drawVendorBanner(doc, vendorLogoDataUrl, pageWidth, y)
+
+  doc.setFont(FONT_FAMILY, 'normal')
+  doc.setFontSize(10)
+  const headerLine = `${refLabel}    •    Date : ${dateStr}    •    ${totalPagesLabel}`
+  y = writeWrapped(doc, headerLine, MARGIN, y + 12, maxWidth, ANSWER_LINE_HEIGHT, {
+    color: COLOR_MUTED
+  })
+  y += 10
+
+  doc.setDrawColor(...COLOR_RULE)
+  doc.line(MARGIN, y, pageWidth - MARGIN, y)
+  y += 26
+
+  // --- Score (sans l'appréciation), taille réduite -------------------------
+  doc.setFont(FONT_FAMILY, 'bold')
+  doc.setFontSize(SCORE_FONT_SIZE)
+  doc.setTextColor(...COLOR_TITLE)
+  y = ensureSpace(doc, y, SCORE_FONT_SIZE + 6)
+  doc.text(`Score : ${score.correct} / ${score.total} (${score.percent}%)`, MARGIN, y)
+  y += SCORE_FONT_SIZE + 12
+
+  doc.setDrawColor(...COLOR_RULE)
+  doc.line(MARGIN, y, pageWidth - MARGIN, y)
+  y += 24
+
+  // --- Détail des questions -------------------------------------------------
+  doc.setFont(FONT_FAMILY, 'bold')
+  doc.setFontSize(13)
+  doc.setTextColor(...COLOR_TITLE)
+  y = ensureSpace(doc, y, 20)
+  doc.text('Détail des réponses', MARGIN, y)
+  y += 20
+
+  results.forEach((r, idx) => {
+    // Titre de question : gras, taille supérieure aux réponses, sans
+    // espacement de caractères particulier, couleur neutre.
+    y = ensureSpace(doc, y, TITLE_LINE_HEIGHT)
+    y = writeWrapped(
+      doc,
+      `${idx + 1}. ${r.question.text}`,
+      MARGIN,
+      y,
+      maxWidth,
+      TITLE_LINE_HEIGHT,
+      { bold: true, color: COLOR_TITLE }
+    )
+    y += 4
+
+    r.question.options.forEach((option) => {
+      const isGiven = Array.isArray(r.given)
+        ? r.given.includes(option.id)
+        : r.given === option.id
+      const isWrongPick = isGiven && !option.correct
+
+      let color = COLOR_NEUTRAL
+      let bold = false
+      if (option.correct) {
+        color = COLOR_CORRECT
+        bold = true
+      } else if (isWrongPick) {
+        color = COLOR_WRONG
+        bold = true
+      }
+
+      y = writeWrapped(
+        doc,
+        `•  ${option.text}`,
+        MARGIN + OPTION_INDENT,
+        y,
+        maxWidth - OPTION_INDENT,
+        ANSWER_LINE_HEIGHT,
+        { bold, color }
+      )
+    })
+
+    y += 12
+  })
+}
+
+/**
  * Construit le document PDF de résultat (sans l'enregistrer), afin de
  * pouvoir soit le télécharger directement, soit en récupérer un Blob pour
  * le joindre à un email/partage.
  *
  * @returns {Promise<{doc: jsPDF, refLabel: string}>}
  */
-async function buildResultsPdf({ fileName, vendorLogoDataUrl, score, level, results }) {
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
-  doc.setCharSpace(CHAR_SPACE)
-
-  const pageWidth = doc.internal.pageSize.getWidth()
-  const maxWidth = pageWidth - MARGIN * 2
-  let y = 56
-
+async function buildResultsPdf({ fileName, vendorLogoDataUrl, score, results }) {
+  const refLabel = `Réf : ${buildDocumentReference(fileName)}`
   const dateStr = new Date().toLocaleDateString('fr-FR', {
     day: '2-digit',
     month: 'long',
@@ -92,109 +254,50 @@ async function buildResultsPdf({ fileName, vendorLogoDataUrl, score, level, resu
     minute: '2-digit'
   })
 
-  // En-tête : uniquement le logo du vendeur (agrandi), sans texte associé.
-  if (vendorLogoDataUrl) {
-    try {
-      const img = await loadImage(vendorLogoDataUrl)
-      const ratio = img.naturalWidth / (img.naturalHeight || 1)
-      const targetHeight = LOGO_HEIGHT
-      const targetWidth = targetHeight * (Number.isFinite(ratio) && ratio > 0 ? ratio : 1)
-      const format = pickImageFormat(vendorLogoDataUrl)
-      const logoTop = y - 14
+  // Passe 1 (à blanc) : uniquement pour connaître le nombre total de pages,
+  // puisque celui-ci doit apparaître dans le sous-titre d'en-tête dès la
+  // première page.
+  const dryDoc = new jsPDF({ unit: 'pt', format: 'a4' })
+  await renderContent(dryDoc, {
+    vendorLogoDataUrl,
+    score,
+    results,
+    refLabel,
+    dateStr,
+    totalPagesLabel: 'Document de … page(s)'
+  })
+  const totalPages = dryDoc.internal.getNumberOfPages()
 
-      doc.addImage(vendorLogoDataUrl, format, MARGIN, logoTop, targetWidth, targetHeight)
-      y = logoTop + targetHeight + 24
-    } catch (err) {
-      console.warn('Logo non inséré dans le PDF :', err)
-    }
-  }
-
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(20)
-  doc.setTextColor(20)
-  y = ensureSpace(doc, y, 26)
-  doc.text('Résultat du quizz', MARGIN, y)
-  y += 22
-
-  const refLabel = `Réf : ${buildDocumentReference(fileName)}`
-
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(10)
-  doc.setTextColor(90)
-  y = writeWrapped(doc, refLabel, MARGIN, y, maxWidth)
-  y = writeWrapped(doc, `Date : ${dateStr}`, MARGIN, y, maxWidth)
-  y += 14
-
-  // Score
-  doc.setDrawColor(220)
-  doc.line(MARGIN, y, pageWidth - MARGIN, y)
-  y += 26
-
-  doc.setTextColor(20)
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(28)
-  doc.text(`${score.correct} / ${score.total}`, MARGIN, y)
-  y += 20
-
-  doc.setFontSize(12)
-  doc.setFont('helvetica', 'normal')
-  doc.text(`${score.percent}% de bonnes réponses`, MARGIN, y)
-  y += 18
-
-  doc.setFont('helvetica', 'bold')
-  doc.text(`Appréciation : ${level.label}`, MARGIN, y)
-  y += 30
-
-  doc.setDrawColor(220)
-  doc.line(MARGIN, y, pageWidth - MARGIN, y)
-  y += 24
-
-  // Détail des questions
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(13)
-  doc.setTextColor(20)
-  y = ensureSpace(doc, y, 20)
-  doc.text('Détail des réponses', MARGIN, y)
-  y += 20
-
-  results.forEach((r, idx) => {
-    doc.setFontSize(QUESTION_FONT_SIZE)
-    doc.setTextColor(r.isCorrect ? 46 : 150, r.isCorrect ? 110 : 40, r.isCorrect ? 80 : 30)
-    const statusMark = r.isCorrect ? '✔' : '✘'
-    y = ensureSpace(doc, y, LINE_HEIGHT)
-    y = writeWrapped(doc, `${statusMark} ${idx + 1}. ${r.question.text}`, MARGIN, y, maxWidth, {
-      bold: true
-    })
-    y += 4
-
-    doc.setFontSize(OPTION_FONT_SIZE)
-    doc.setTextColor(70)
-
-    r.question.options.forEach((option) => {
-      const isGiven = Array.isArray(r.given)
-        ? r.given.includes(option.id)
-        : r.given === option.id
-
-      const bullet = option.correct ? '  ✔ ' : isGiven ? '  ✘ ' : '  - '
-      const label = option.correct ? `${option.text} (bonne réponse)` : option.text
-
-      doc.setTextColor(
-        option.correct ? 40 : isGiven ? 150 : 70,
-        option.correct ? 110 : isGiven ? 40 : 70,
-        option.correct ? 60 : isGiven ? 30 : 70
-      )
-
-      y = writeWrapped(doc, `${bullet}${label}`, MARGIN + 10, y, maxWidth - 10, {
-        bold: option.correct,
-        underline: isGiven
-      })
-    })
-
-    y += 12
-    doc.setTextColor(70)
+  // Passe 2 (définitive) : le sous-titre inclut désormais le total de pages.
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+  await renderContent(doc, {
+    vendorLogoDataUrl,
+    score,
+    results,
+    refLabel,
+    dateStr,
+    totalPagesLabel: `Document de ${totalPages} page${totalPages > 1 ? 's' : ''}`
   })
 
+  // --- Numérotation des pages (bas à droite, sur chaque page) --------------
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageHeight = doc.internal.pageSize.getHeight()
+  const pageCount = doc.internal.getNumberOfPages()
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i)
+    doc.setFont(FONT_FAMILY, 'normal')
+    doc.setFontSize(9)
+    doc.setTextColor(...COLOR_MUTED)
+    doc.text(`Page ${i} / ${pageCount}`, pageWidth - MARGIN, pageHeight - PAGE_NUMBER_MARGIN, {
+      align: 'right'
+    })
+  }
+
   return { doc, refLabel }
+}
+
+function safeFileBase(refLabel) {
+  return refLabel.replace(/^Réf\s*:\s*/i, '').replace(/[^a-z0-9-_]+/gi, '_')
 }
 
 /**
@@ -202,8 +305,7 @@ async function buildResultsPdf({ fileName, vendorLogoDataUrl, score, level, resu
  */
 export async function exportResultsToPdf(params) {
   const { doc, refLabel } = await buildResultsPdf(params)
-  const safeName = refLabel.replace(/^Réf\s*:\s*/i, '').replace(/[^a-z0-9-_]+/gi, '_')
-  doc.save(`resultat-${safeName}.pdf`)
+  doc.save(`resultat-${safeFileBase(refLabel)}.pdf`)
 }
 
 /**
@@ -213,8 +315,7 @@ export async function exportResultsToPdf(params) {
  */
 export async function getResultsPdfBlob(params) {
   const { doc, refLabel } = await buildResultsPdf(params)
-  const safeName = refLabel.replace(/^Réf\s*:\s*/i, '').replace(/[^a-z0-9-_]+/gi, '_')
-  const filename = `resultat-${safeName}.pdf`
+  const filename = `resultat-${safeFileBase(refLabel)}.pdf`
   const blob = doc.output('blob')
   return { blob, filename }
 }
