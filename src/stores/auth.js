@@ -4,6 +4,7 @@ import {
   DEFAULT_PASSWORD_HASH,
   DEFAULT_ALLOWED_ADMIN_DOMAINS
 } from '@/config/adminAccess'
+import { sha256Fallback } from '@/utils/sha256Fallback'
 
 // IMPORTANT — sécurité :
 // - Le mot de passe n'est JAMAIS stocké ni comparé en clair : seule son
@@ -26,12 +27,29 @@ function readJSON(key, fallback) {
   }
 }
 
+// `crypto.subtle` (Web Crypto) n'existe que dans un "contexte sécurisé"
+// (HTTPS, ou `localhost`). Sur un environnement de test servi en simple
+// HTTP (ex. un domaine interne sans TLS comme "limac"), `crypto.subtle`
+// vaut `undefined` : on utilise alors une implémentation SHA-256 en
+// JavaScript pur, produisant exactement la même empreinte, pour que la
+// connexion admin fonctionne malgré tout.
 async function sha256Hex(text) {
-  const data = new TextEncoder().encode(text)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+  const canUseSubtleCrypto =
+    typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.subtle.digest === 'function'
+
+  if (canUseSubtleCrypto) {
+    try {
+      const data = new TextEncoder().encode(text)
+      const digest = await crypto.subtle.digest('SHA-256', data)
+      return Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('')
+    } catch (err) {
+      console.warn('crypto.subtle a échoué, repli sur le SHA-256 JS pur :', err)
+    }
+  }
+
+  return sha256Fallback(text)
 }
 
 export const useAuthStore = defineStore('auth', {
