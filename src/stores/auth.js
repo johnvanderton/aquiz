@@ -16,6 +16,10 @@ import { sha256Fallback } from '@/utils/sha256Fallback'
 //   session (effacé à la fermeture de l'onglet ou à la déconnexion).
 const PASSWORD_HASH_OVERRIDE_KEY = 'quiz_admin_password_hash_v1'
 const ALLOWED_DOMAINS_KEY = 'quiz_admin_allowed_domains_v1'
+// "Instantané" de la config (adminAccess.js) au moment où l'admin a
+// enregistré sa propre liste de domaines. Sert à détecter un changement du
+// fichier de config côté serveur (voir loadAllowedDomains ci-dessous).
+const ALLOWED_DOMAINS_BASELINE_KEY = 'quiz_admin_allowed_domains_baseline_v1'
 const SESSION_KEY = 'quiz_admin_session'
 
 function readJSON(key, fallback) {
@@ -25,6 +29,35 @@ function readJSON(key, fallback) {
   } catch {
     return fallback
   }
+}
+
+/**
+ * Détermine la liste de domaines à utiliser au démarrage.
+ *
+ * Problème résolu : une fois la liste enregistrée dans le localStorage,
+ * elle y restait indéfiniment — même après une mise à jour du fichier de
+ * config (adminAccess.js) côté serveur, qui n'avait alors plus aucun
+ * effet tant qu'un admin ne revenait pas modifier la liste manuellement.
+ *
+ * On mémorise donc, aux côtés de la liste personnalisée, un instantané de
+ * la config par défaut au moment de l'enregistrement (la "baseline"). Si
+ * la config par défaut actuelle ne correspond plus à cette baseline (donc
+ * si le fichier a été modifié/redéployé depuis), on considère la
+ * personnalisation locale obsolète : elle est effacée et on repart des
+ * valeurs à jour du fichier de config. La config serveur reprend ainsi
+ * systématiquement la main après un déploiement.
+ */
+function loadAllowedDomains() {
+  const currentBaseline = JSON.stringify(DEFAULT_ALLOWED_ADMIN_DOMAINS)
+  const storedBaseline = localStorage.getItem(ALLOWED_DOMAINS_BASELINE_KEY)
+
+  if (storedBaseline !== currentBaseline) {
+    localStorage.removeItem(ALLOWED_DOMAINS_KEY)
+    localStorage.removeItem(ALLOWED_DOMAINS_BASELINE_KEY)
+    return [...DEFAULT_ALLOWED_ADMIN_DOMAINS]
+  }
+
+  return readJSON(ALLOWED_DOMAINS_KEY, DEFAULT_ALLOWED_ADMIN_DOMAINS)
 }
 
 // `crypto.subtle` (Web Crypto) n'existe que dans un "contexte sécurisé"
@@ -58,7 +91,7 @@ export const useAuthStore = defineStore('auth', {
     loginError: '',
     passwordChangeError: '',
     passwordChangeSuccess: false,
-    allowedDomains: readJSON(ALLOWED_DOMAINS_KEY, DEFAULT_ALLOWED_ADMIN_DOMAINS)
+    allowedDomains: loadAllowedDomains()
   }),
 
   getters: {
@@ -116,6 +149,7 @@ export const useAuthStore = defineStore('auth', {
       const cleaned = [...new Set(domains.map((d) => d.trim()).filter(Boolean))]
       this.allowedDomains = cleaned
       localStorage.setItem(ALLOWED_DOMAINS_KEY, JSON.stringify(cleaned))
+      localStorage.setItem(ALLOWED_DOMAINS_BASELINE_KEY, JSON.stringify(DEFAULT_ALLOWED_ADMIN_DOMAINS))
     }
   }
 })

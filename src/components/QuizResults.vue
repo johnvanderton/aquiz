@@ -90,6 +90,10 @@
               <span v-if="wasSelectedWrong(r, option)" class="tag tag--wrong">votre réponse</span>
             </li>
           </ul>
+
+          <p v-if="!r.isCorrect" class="user-answer-recap mt-2">
+            <strong>Votre réponse :</strong> {{ selectedOptionTexts(r) }}
+          </p>
         </div>
       </div>
     </v-card>
@@ -136,6 +140,17 @@ function optionClass(result, option) {
   if (option.correct) return 'is-correct'
   if (wasSelectedWrong(result, option)) return 'is-wrong'
   return ''
+}
+
+// Récapitulatif explicite de ce que l'utilisateur a réellement sélectionné
+// pour une question ratée (au-delà du seul marquage par option), afin que
+// son choix soit toujours clairement indiqué, y compris sur les questions
+// à réponses multiples.
+function selectedOptionTexts(result) {
+  const given = result.given
+  const ids = Array.isArray(given) ? given : given ? [given] : []
+  const texts = result.question.options.filter((o) => ids.includes(o.id)).map((o) => o.text)
+  return texts.length > 0 ? texts.join(', ') : 'aucune réponse sélectionnée'
 }
 
 async function downloadPdf() {
@@ -267,5 +282,14 @@ function goToContact() {
 .tag--right {
   background: rgba(62, 122, 92, 0.12);
   color: rgb(var(--v-theme-success));
+}
+
+.user-answer-recap {
+  font-size: 0.85rem;
+  color: rgb(var(--v-theme-error));
+  background: rgba(180, 72, 47, 0.06);
+  border-radius: 8px;
+  padding: 0.4rem 0.65rem;
+  display: inline-block;
 }
 </style>

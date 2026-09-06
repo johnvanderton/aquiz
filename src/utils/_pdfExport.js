@@ -222,11 +222,9 @@ async function renderContent(doc, { vendorLogoDataUrl, score, results, refLabel,
         bold = true
       }
 
-      const label = isWrongPick ? `${option.text} (votre réponse)` : option.text
-
       y = writeWrapped(
         doc,
-        `•  ${label}`,
+        `•  ${option.text}`,
         MARGIN + OPTION_INDENT,
         y,
         maxWidth - OPTION_INDENT,
