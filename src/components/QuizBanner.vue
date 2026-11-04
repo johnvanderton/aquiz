@@ -19,7 +19,7 @@ const quizBanners = useQuizBannersStore()
 
 .quiz-banner-img {
   width: 100%;
-  max-height: 220px;
+  max-height: 100%; /** 220px */
   object-fit: cover;
   display: block;
   border-radius: 12px;
