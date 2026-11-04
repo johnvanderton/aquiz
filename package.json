@@ -1,0 +1,32 @@
+{
+  "name": "vue-quiz-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --watch server/index.js",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@mdi/font": "^7.4.47",
+    "better-sqlite3": "^13.0.3",
+    "express": "^4.22.3",
+    "jspdf": "^2.5.2",
+    "mammoth": "^1.8.0",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0",
+    "vuetify": "^3.7.6"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "concurrently": "^10.0.6",
+    "vite": "^6.0.5"
+  },
+  "engines": {
+    "node": ">=18.11"
+  }
+}
