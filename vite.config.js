@@ -10,11 +10,14 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5173,
+    	host: '0.0.0.0',
+    	port: 5173,
+    	strictPort: true,
+	allowedHosts: ['limac'],
     // En développement, les appels /api sont transmis au serveur Express.
     proxy: {
       '/api': {
-        target: `http://localhost:${process.env.PORT || 3000}`,
+        target: `http://localhost:${process.env.PORT || 4000}`,
         changeOrigin: false
       }
     }

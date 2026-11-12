@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "test": "PORT=4000 concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "node --watch server/index.js",
     "dev:client": "vite",
     "build": "vite build",
+    "build:test": "npm run build && npm run test", 
     "start": "node server/index.js"
   },
   "dependencies": {

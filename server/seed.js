@@ -37,6 +37,6 @@ export function seedDefaults() {
       .split(',')
       .map((d) => d.trim())
       .filter(Boolean)
-    setSetting('allowed_domains', fromEnv.length ? fromEnv : ['localhost', '127.0.0.1', '::1'])
+    setSetting('allowed_domains', fromEnv.length ? fromEnv : ['localhost', '127.0.0.1', '::1', 'limac'])
   }
 }

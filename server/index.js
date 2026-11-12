@@ -7,7 +7,7 @@ import { seedDefaults } from './seed.js'
 import { router } from './routes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const PORT = Number(process.env.PORT) || 3000
+const PORT = Number(process.env.PORT) || 4000
 const HOST = process.env.HOST || '0.0.0.0'
 const DIST = path.resolve(__dirname, '..', 'dist')
 
